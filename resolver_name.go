@@ -30,7 +30,6 @@ func (r *NameResolver) Name(id int) string {
 		return "id0"
 	}
 
-	// cache
 	r.mu.RLock()
 	if v, ok := r.cache[id]; ok && strings.TrimSpace(v) != "" {
 		r.mu.RUnlock()
@@ -38,84 +37,76 @@ func (r *NameResolver) Name(id int) string {
 	}
 	r.mu.RUnlock()
 
-	name, ok := r.fetchName(id)
-	if ok && strings.TrimSpace(name) != "" {
-		r.mu.Lock()
-		r.cache[id] = name
-		r.mu.Unlock()
-		return name
+	name := strings.TrimSpace(r.fetchName(id))
+	if name == "" {
+		if id < 0 {
+			name = fmt.Sprintf("club%d", -id)
+		} else {
+			name = fmt.Sprintf("id%d", id)
+		}
 	}
 
-	// НЕ кешируем фейлы, чтобы в следующий раз попытаться снова
-	if id > 0 {
-		return fmt.Sprintf("id%d", id)
-	}
-	return fmt.Sprintf("club%d", -id)
+	r.mu.Lock()
+	r.cache[id] = name
+	r.mu.Unlock()
+
+	return name
 }
 
-func (r *NameResolver) fetchName(id int) (string, bool) {
+func (r *NameResolver) fetchName(id int) string {
 	if id > 0 {
-		var out struct {
-			Response []struct {
-				FirstName string `json:"first_name"`
-				LastName  string `json:"last_name"`
-			} `json:"response"`
+		// users.get -> response это МАССИВ
+		var out []struct {
+			FirstName string `json:"first_name"`
+			LastName  string `json:"last_name"`
 		}
 
-		err := r.vk.RequestUnmarshal("users.get", &out, api.Params{
-			"user_ids":  fmt.Sprintf("%d", id),
-			"name_case": "nom",
-		})
+		err := r.vk.RequestUnmarshal(
+			"users.get",
+			&out,
+			api.Params{
+				"user_ids":  fmt.Sprintf("%d", id),
+				"name_case": "nom",
+			},
+		)
 		if err != nil {
 			if r.debug {
 				log.Printf("[users.get] id=%d error: %v", id, err)
 			}
-			return "", false
+			return ""
 		}
-		if len(out.Response) == 0 {
+		if len(out) == 0 {
 			if r.debug {
-				log.Printf("[users.get] id=%d empty response", id)
+				log.Printf("[users.get] id=%d empty", id)
 			}
-			return "", false
+			return ""
 		}
-
-		fn := strings.TrimSpace(out.Response[0].FirstName)
-		ln := strings.TrimSpace(out.Response[0].LastName)
-		name := strings.TrimSpace(fn + " " + ln)
-		if name == "" {
-			return "", false
-		}
-		return name, true
+		return strings.TrimSpace(out[0].FirstName + " " + out[0].LastName)
 	}
 
-	// group/community
+	// groups.getById -> response тоже МАССИВ
 	gid := -id
-	var gr struct {
-		Response []struct {
-			Name string `json:"name"`
-		} `json:"response"`
+	var out []struct {
+		Name string `json:"name"`
 	}
-
-	// ВАЖНО: group_ids (надежнее)
-	err := r.vk.RequestUnmarshal("groups.getById", &gr, api.Params{
-		"group_ids": fmt.Sprintf("%d", gid),
-	})
+	err := r.vk.RequestUnmarshal(
+		"groups.getById",
+		&out,
+		api.Params{
+			"group_ids": fmt.Sprintf("%d", gid),
+		},
+	)
 	if err != nil {
 		if r.debug {
-			log.Printf("[groups.getById] gid=%d error: %v", gid, err)
+			log.Printf("[groups.getById] id=%d error: %v", gid, err)
 		}
-		return "", false
+		return ""
 	}
-	if len(gr.Response) == 0 {
+	if len(out) == 0 {
 		if r.debug {
-			log.Printf("[groups.getById] gid=%d empty response", gid)
+			log.Printf("[groups.getById] id=%d empty", gid)
 		}
-		return "", false
+		return ""
 	}
-
-	name := strings.TrimSpace(gr.Response[0].Name)
-	if name == "" {
-		return "", false
-	}
-	return name, true
+	return strings.TrimSpace(out[0].Name)
 }

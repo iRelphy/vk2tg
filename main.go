@@ -24,9 +24,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("telegram init: %v", err)
 	}
-	// на всякий случай отключаем webhook, чтобы getUpdates не конфликтовал
 	_, _ = tg.Request(tgbotapi.DeleteWebhookConfig{DropPendingUpdates: false})
-
 	log.Printf("Telegram bot: @%s", tg.Self.UserName)
 
 	// Subscribers store
@@ -43,10 +41,9 @@ func main() {
 	vk := vkClient.VK
 
 	names := NewNameResolver(vk, cfg.Debug)
-	peers := NewPeerResolver(vk)
+	peers := NewPeerResolver(vk, cfg.Debug)
 
 	photo := NewPhotoHandler(vkClient, bc, cfg.Debug)
-
 	bridge := NewBridge(cfg, vkClient, names, peers, bc, photo)
 
 	// LongPoll init
@@ -56,7 +53,6 @@ func main() {
 		log.Fatalf("vk longpoll init: %v", err)
 	}
 
-	// Событие 4: новое сообщение
 	lp.EventNew(4, bridge.HandleNewMessageEvent)
 
 	// Context + signals
@@ -73,7 +69,6 @@ func main() {
 	// graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
 	go func() {
 		<-sigCh
 		log.Printf("Stopping...")

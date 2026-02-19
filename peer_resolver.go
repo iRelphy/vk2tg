@@ -2,21 +2,34 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 
 	"github.com/SevereCloud/vksdk/v3/api"
 )
 
+type vkConversationsByID struct {
+	Count int `json:"count"`
+	Items []struct {
+		ChatSettings struct {
+			Title string `json:"title"`
+		} `json:"chat_settings"`
+	} `json:"items"`
+}
+
 type PeerResolver struct {
 	vk    *api.VK
+	debug bool
+
 	mu    sync.RWMutex
 	cache map[int]string // peer_id -> title
 }
 
-func NewPeerResolver(vk *api.VK) *PeerResolver {
+func NewPeerResolver(vk *api.VK, debug bool) *PeerResolver {
 	return &PeerResolver{
 		vk:    vk,
+		debug: debug,
 		cache: map[int]string{},
 	}
 }
@@ -27,13 +40,14 @@ func (r *PeerResolver) Title(peerID int) string {
 	}
 
 	r.mu.RLock()
-	if v, ok := r.cache[peerID]; ok && v != "" {
+	if v, ok := r.cache[peerID]; ok && strings.TrimSpace(v) != "" {
 		r.mu.RUnlock()
 		return v
 	}
 	r.mu.RUnlock()
 
-	title := r.fetchTitle(peerID)
+	title := strings.TrimSpace(r.fetchTitle(peerID))
+
 	if title == "" {
 		// fallback
 		if peerID >= 2000000000 {
@@ -46,28 +60,33 @@ func (r *PeerResolver) Title(peerID int) string {
 	r.mu.Lock()
 	r.cache[peerID] = title
 	r.mu.Unlock()
+
 	return title
 }
 
 func (r *PeerResolver) fetchTitle(peerID int) string {
-	var out struct {
-		Response struct {
-			Count int `json:"count"`
-			Items []struct {
-				ChatSettings struct {
-					Title string `json:"title"`
-				} `json:"chat_settings"`
-			} `json:"items"`
-		} `json:"response"`
-	}
+	var out vkConversationsByID
 
-	_ = r.vk.RequestUnmarshal("messages.getConversationsById", &out, api.Params{
-		"peer_ids": peerID,
-		"extended": 0,
-	})
-
-	if len(out.Response.Items) == 0 {
+	err := r.vk.RequestUnmarshal(
+		"messages.getConversationsById",
+		&out,
+		api.Params{
+			"peer_ids": fmt.Sprintf("%d", peerID),
+			"extended": 0,
+		},
+	)
+	if err != nil {
+		if r.debug {
+			log.Printf("[messages.getConversationsById] peer=%d error: %v", peerID, err)
+		}
 		return ""
 	}
-	return strings.TrimSpace(out.Response.Items[0].ChatSettings.Title)
+	if len(out.Items) == 0 {
+		if r.debug {
+			log.Printf("[messages.getConversationsById] peer=%d empty items", peerID)
+		}
+		return ""
+	}
+
+	return strings.TrimSpace(out.Items[0].ChatSettings.Title)
 }

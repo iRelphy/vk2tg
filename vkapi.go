@@ -15,12 +15,9 @@ func NewVKClient(token string) *VKClient {
 	return &VKClient{VK: vk}
 }
 
-type VKEnvelope[T any] struct {
-	Response T `json:"response"`
-}
-
-// messages.getByConversationMessageId
-type VKGetByConvMsgIDResponse struct {
+// messages.getById / messages.getByConversationMessageId возвращают:
+// { "count": N, "items": [...] }  (это уже развёрнутый "response")
+type VKGetMessagesResponse struct {
 	Count int         `json:"count"`
 	Items []VKMessage `json:"items"`
 }
@@ -53,14 +50,9 @@ type VKPhotoSize struct {
 	Type   string `json:"type"`
 }
 
-// messages.getById
-type VKGetByIDResponse struct {
-	Count int         `json:"count"`
-	Items []VKMessage `json:"items"`
-}
-
 func (c *VKClient) GetMessageByID(msgID int) (*VKMessage, error) {
-	var out VKEnvelope[VKGetByIDResponse]
+	var out VKGetMessagesResponse
+
 	err := c.VK.RequestUnmarshal(
 		"messages.getById",
 		&out,
@@ -72,10 +64,35 @@ func (c *VKClient) GetMessageByID(msgID int) (*VKMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(out.Response.Items) == 0 {
+	if len(out.Items) == 0 {
 		return nil, fmt.Errorf("no message items for message_id=%d", msgID)
 	}
-	msg := out.Response.Items[0]
+
+	msg := out.Items[0]
+	return &msg, nil
+}
+
+// Для чатов LongPoll часто отдаёт conversation_message_id
+func (c *VKClient) GetMessageByConversationMessageID(peerID, convMsgID int) (*VKMessage, error) {
+	var out VKGetMessagesResponse
+
+	err := c.VK.RequestUnmarshal(
+		"messages.getByConversationMessageId",
+		&out,
+		api.Params{
+			"peer_id":                  peerID,
+			"conversation_message_ids": convMsgID,
+			"extended":                 0,
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	if len(out.Items) == 0 {
+		return nil, fmt.Errorf("no message items for peer_id=%d conversation_message_id=%d", peerID, convMsgID)
+	}
+
+	msg := out.Items[0]
 	return &msg, nil
 }
 

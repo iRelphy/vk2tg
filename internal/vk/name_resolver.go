@@ -1,4 +1,4 @@
-package main
+package vk
 
 import (
 	"fmt"
@@ -9,6 +9,11 @@ import (
 	"github.com/SevereCloud/vksdk/v3/api"
 )
 
+// NameResolver converts from_id -> human-readable name.
+// - positive id: user (users.get)
+// - negative id: group (groups.getById)
+//
+// We cache results in memory to avoid extra requests.
 type NameResolver struct {
 	vk    *api.VK
 	debug bool
@@ -25,6 +30,7 @@ func NewNameResolver(vk *api.VK, debug bool) *NameResolver {
 	}
 }
 
+// Name returns a readable name for a VK sender id.
 func (r *NameResolver) Name(id int) string {
 	if id == 0 {
 		return "id0"
@@ -39,6 +45,7 @@ func (r *NameResolver) Name(id int) string {
 
 	name := strings.TrimSpace(r.fetchName(id))
 	if name == "" {
+		// Fallback if API failed.
 		if id < 0 {
 			name = fmt.Sprintf("club%d", -id)
 		} else {
@@ -55,12 +62,11 @@ func (r *NameResolver) Name(id int) string {
 
 func (r *NameResolver) fetchName(id int) string {
 	if id > 0 {
-		// users.get -> response это МАССИВ
+		// users.get returns an array in "response"
 		var out []struct {
 			FirstName string `json:"first_name"`
 			LastName  string `json:"last_name"`
 		}
-
 		err := r.vk.RequestUnmarshal(
 			"users.get",
 			&out,
@@ -84,7 +90,7 @@ func (r *NameResolver) fetchName(id int) string {
 		return strings.TrimSpace(out[0].FirstName + " " + out[0].LastName)
 	}
 
-	// groups.getById -> response тоже МАССИВ
+	// groups.getById also returns an array in "response"
 	gid := -id
 	var out []struct {
 		Name string `json:"name"`
@@ -92,9 +98,7 @@ func (r *NameResolver) fetchName(id int) string {
 	err := r.vk.RequestUnmarshal(
 		"groups.getById",
 		&out,
-		api.Params{
-			"group_ids": fmt.Sprintf("%d", gid),
-		},
+		api.Params{"group_ids": fmt.Sprintf("%d", gid)},
 	)
 	if err != nil {
 		if r.debug {

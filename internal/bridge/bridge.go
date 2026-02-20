@@ -1,26 +1,42 @@
-package main
+package bridge
+
+// Package bridge connects VK and Telegram.
+// It receives VK LongPoll events and forwards them to Telegram subscribers.
+//
+// Main idea:
+// 1) VK LongPoll tells us: "new message happened"
+// 2) We load full message details via VK API (for sender name, attachments, etc.)
+// 3) We format a neat Telegram message (HTML)
+// 4) We send it to all subscribed Telegram chats
 
 import (
 	"context"
 	"fmt"
 	"log"
 	"strings"
+
+	"github.com/iRelphy/vk2tg/internal/config"
+	"github.com/iRelphy/vk2tg/internal/tg"
+	"github.com/iRelphy/vk2tg/internal/util"
+	"github.com/iRelphy/vk2tg/internal/vk"
 )
 
+// Bridge glues together all components: config, VK, resolvers and Telegram broadcaster.
 type Bridge struct {
-	cfg   Config
-	vk    *VKClient
-	names *NameResolver
-	peers *PeerResolver
-	bc    *Broadcaster
+	cfg   config.Config
+	vk    *vk.Client
+	names *vk.NameResolver
+	peers *vk.PeerResolver
+	bc    *tg.Broadcaster
 	photo *PhotoHandler
 	debug bool
 }
 
-func NewBridge(cfg Config, vk *VKClient, names *NameResolver, peers *PeerResolver, bc *Broadcaster, photo *PhotoHandler) *Bridge {
+// New creates a ready-to-use bridge.
+func New(cfg config.Config, vkClient *vk.Client, names *vk.NameResolver, peers *vk.PeerResolver, bc *tg.Broadcaster, photo *PhotoHandler) *Bridge {
 	return &Bridge{
 		cfg:   cfg,
-		vk:    vk,
+		vk:    vkClient,
 		names: names,
 		peers: peers,
 		bc:    bc,
@@ -29,6 +45,8 @@ func NewBridge(cfg Config, vk *VKClient, names *NameResolver, peers *PeerResolve
 	}
 }
 
+// asInt and asString convert LongPoll event fields to Go types safely.
+// LongPoll events are []interface{} and VK may return numbers as int/int64/float64.
 func asInt(ev []interface{}, idx int) int {
 	if idx < 0 || idx >= len(ev) {
 		return 0
@@ -57,20 +75,10 @@ func asString(ev []interface{}, idx int) string {
 	}
 }
 
-func (b *Bridge) peerAllowed(peerID int) bool {
-	// 1) VK_PEER_IDS whitelist
-	if len(b.cfg.VKPeerIDs) > 0 {
-		return b.cfg.VKPeerIDs[peerID]
-	}
-	// 2) VK_PEER_ID single
-	if b.cfg.VKPeerID != 0 {
-		return peerID == b.cfg.VKPeerID
-	}
-	// 3) otherwise allow all
-	return true
-}
-
 // --- helpers to read ExtendedEvents tail safely ---
+//
+// With ExtendedEvents enabled, LongPoll event 4 may contain an extra map at index 6
+// with useful fields like "from" and sometimes "title".
 func extraMap(ev []interface{}) map[string]interface{} {
 	if len(ev) <= 6 {
 		return nil
@@ -117,7 +125,8 @@ func getStrAny(v interface{}) string {
 	return ""
 }
 
-// LongPoll event 4 handler
+// HandleNewMessageEvent is registered as LongPoll handler for VK event type 4 ("new message").
+// Signature must match vksdk longpoll callback.
 func (b *Bridge) HandleNewMessageEvent(ev []interface{}) error {
 	// event 4: [4, msg_id OR conversation_msg_id, flags, peer_id, ts, text, ...]
 	msgID := asInt(ev, 1)
@@ -129,27 +138,17 @@ func (b *Bridge) HandleNewMessageEvent(ev []interface{}) error {
 	if peerID == 0 || msgID == 0 {
 		return nil
 	}
-	if !b.peerAllowed(peerID) {
+	if !b.cfg.PeerAllowed(peerID) {
 		return nil
 	}
-	// outbox filtering
+
+	// VK flag bit 2 means "outbox" (sent by us).
+	// If VK_FORWARD_OUTBOX=false, skip such messages.
 	if !b.cfg.VKForwardOutbox && (flags&2) != 0 {
 		return nil
 	}
 
-	// Try to get full message:
-	// 1) messages.getById (works if msgID is global)
-	msg, err := b.vk.GetMessageByID(msgID)
-	if err != nil {
-		// 2) messages.getByConversationMessageId (works if msgID is conversation_message_id)
-		msg2, err2 := b.vk.GetMessageByConversationMessageID(peerID, msgID)
-		if err2 == nil {
-			msg = msg2
-			err = nil
-		}
-	}
-
-	// Parse ExtendedEvents tail for fallback title/from
+	// Parse ExtendedEvents tail for fallback title/from.
 	ext := extraMap(ev)
 	fromIDEv := 0
 	titleEv := ""
@@ -172,21 +171,35 @@ func (b *Bridge) HandleNewMessageEvent(ev []interface{}) error {
 		chatTitle = b.peers.Title(peerID)
 	}
 
-	// If still no msg -> fallback to LP text
+	// Try to get full VK message:
+	// 1) messages.getById (global message_id)
+	msg, err := b.vk.GetMessageByID(msgID)
+	if err != nil {
+		// 2) messages.getByConversationMessageId (conversation_message_id inside a chat)
+		msg2, err2 := b.vk.GetMessageByConversationMessageID(peerID, msgID)
+		if err2 == nil {
+			msg = msg2
+			err = nil
+		}
+	}
+
+	// If still no message -> fallback to raw LongPoll text.
 	if err != nil || msg == nil {
 		if b.debug {
 			log.Printf("vk get message error peer=%d msg_id=%d: %v (fallback to LP text)", peerID, msgID, err)
 		}
+
 		senderID := fromIDEv
 		sender := "id0"
 		if senderID != 0 {
 			sender = b.names.Name(senderID)
 		}
+
 		payload := buildMessageHTML(chatTitle, sender, ts, "text", textEv)
 		return b.bc.SendTextHTML(payload)
 	}
 
-	// sanity check
+	// sanity check: if VK returned a different peer, skip.
 	if msg.PeerID != 0 && msg.PeerID != peerID {
 		if b.debug {
 			log.Printf("skip msg_id=%d: msg.peer_id=%d != lp.peer_id=%d", msgID, msg.PeerID, peerID)
@@ -203,16 +216,16 @@ func (b *Bridge) HandleNewMessageEvent(ev []interface{}) error {
 		sender = b.names.Name(senderID)
 	}
 
-	// Debug log
 	if b.debug {
 		short := strings.TrimSpace(msg.Text)
-		if len([]rune(short)) > 80 {
-			short = string([]rune(short)[:80]) + "…"
+		r := []rune(short)
+		if len(r) > 80 {
+			short = string(r[:80]) + "…"
 		}
-		log.Printf("[MSG] peer=%d msg_id=%d from_id=%d ts=%s text=%q", peerID, msgID, senderID, formatTime(msg.Date), short)
+		log.Printf("[MSG] peer=%d msg_id=%d from_id=%d ts=%s text=%q", peerID, msgID, senderID, util.FormatTime(msg.Date), short)
 	}
 
-	// 1) Try photo
+	// 1) Try photo first (if exists).
 	textSentInCaption := false
 	if b.photo != nil {
 		res, perr := b.photo.HandleVariantA(context.Background(), chatTitle, sender, msg.Date, msg.Text, msg)
@@ -224,7 +237,7 @@ func (b *Bridge) HandleNewMessageEvent(ev []interface{}) error {
 		}
 	}
 
-	// 2) Text separately (if not in caption)
+	// 2) Send text separately if it was not included in the photo caption.
 	if strings.TrimSpace(msg.Text) != "" && !textSentInCaption {
 		payload := buildMessageHTML(chatTitle, sender, msg.Date, "text", msg.Text)
 		if err := b.bc.SendTextHTML(payload); err != nil {

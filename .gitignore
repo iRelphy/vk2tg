@@ -1,2 +1,9 @@
 /main.env
 /subscribers.json
+
+# build outputs
+/bin/
+/dist/
+/vk2tg
+*.exe
+*.out

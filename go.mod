@@ -1,6 +1,6 @@
-module main.go
+module github.com/iRelphy/vk2tg
 
-go 1.25.0
+go 1.23.0
 
 require (
 	github.com/SevereCloud/vksdk/v3 v3.2.2

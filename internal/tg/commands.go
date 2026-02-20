@@ -1,34 +1,41 @@
-package main
+package tg
 
 import (
 	"context"
 	"log"
 	"strings"
 
+	"github.com/iRelphy/vk2tg/internal/storage"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-type TGCommands struct {
-	tg    *tgbotapi.BotAPI
-	store *SubscriberStore
+// Commands listens for Telegram updates and reacts to bot commands.
+// We currently support:
+// - /start : subscribe this chat
+// - /stop  : unsubscribe this chat
+type Commands struct {
+	bot   *tgbotapi.BotAPI
+	store *storage.SubscriberStore
 	debug bool
 }
 
-func NewTGCommands(tg *tgbotapi.BotAPI, store *SubscriberStore, debug bool) *TGCommands {
-	return &TGCommands{tg: tg, store: store, debug: debug}
+func NewCommands(bot *tgbotapi.BotAPI, store *storage.SubscriberStore, debug bool) *Commands {
+	return &Commands{bot: bot, store: store, debug: debug}
 }
 
-func (c *TGCommands) Run(ctx context.Context) {
+// Run blocks forever until ctx is cancelled.
+func (c *Commands) Run(ctx context.Context) {
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 30
 
-	updates := c.tg.GetUpdatesChan(u)
+	updates := c.bot.GetUpdatesChan(u)
 	log.Printf("[TG] command loop started")
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
+
 		case upd := <-updates:
 			if upd.Message == nil {
 				continue
@@ -41,29 +48,33 @@ func (c *TGCommands) Run(ctx context.Context) {
 
 			switch {
 			case strings.HasPrefix(text, "/start"):
-				sub := Subscriber{
+				sub := storage.Subscriber{
 					ChatID:    upd.Message.Chat.ID,
 					Username:  upd.Message.From.UserName,
 					FirstName: upd.Message.From.FirstName,
 					LastName:  upd.Message.From.LastName,
 				}
 				changed, _ := c.store.Add(sub)
+
 				reply := "✅ Подписал! Теперь буду присылать сообщения из ВК сюда.\n\n" +
-					"ℹ️ Если ты хочешь остановить — напиши /stop"
+					"ℹ️ Если хочешь остановить — напиши /stop"
 				if !changed {
 					reply = "✅ Ты уже подписан(а).\n\nℹ️ Остановить — /stop"
 				}
+
 				msg := tgbotapi.NewMessage(upd.Message.Chat.ID, reply)
-				_, _ = c.tg.Send(msg)
+				_, _ = c.bot.Send(msg)
 
 			case strings.HasPrefix(text, "/stop"):
 				changed, _ := c.store.Remove(upd.Message.Chat.ID)
+
 				reply := "🛑 Ок, отключил."
 				if !changed {
 					reply = "ℹ️ Ты и так не был(а) подписан(а)."
 				}
+
 				msg := tgbotapi.NewMessage(upd.Message.Chat.ID, reply)
-				_, _ = c.tg.Send(msg)
+				_, _ = c.bot.Send(msg)
 			}
 		}
 	}

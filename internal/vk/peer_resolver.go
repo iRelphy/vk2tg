@@ -1,4 +1,4 @@
-package main
+package vk
 
 import (
 	"fmt"
@@ -9,15 +9,8 @@ import (
 	"github.com/SevereCloud/vksdk/v3/api"
 )
 
-type vkConversationsByID struct {
-	Count int `json:"count"`
-	Items []struct {
-		ChatSettings struct {
-			Title string `json:"title"`
-		} `json:"chat_settings"`
-	} `json:"items"`
-}
-
+// PeerResolver converts peer_id -> human-readable chat title.
+// We cache titles in memory to avoid extra VK API calls.
 type PeerResolver struct {
 	vk    *api.VK
 	debug bool
@@ -34,11 +27,14 @@ func NewPeerResolver(vk *api.VK, debug bool) *PeerResolver {
 	}
 }
 
+// Title returns chat title for a VK peer_id.
+// If VK does not provide a title (for example, no access), we return a fallback.
 func (r *PeerResolver) Title(peerID int) string {
 	if peerID == 0 {
 		return "Диалог"
 	}
 
+	// 1) Fast path: cache.
 	r.mu.RLock()
 	if v, ok := r.cache[peerID]; ok && strings.TrimSpace(v) != "" {
 		r.mu.RUnlock()
@@ -46,10 +42,11 @@ func (r *PeerResolver) Title(peerID int) string {
 	}
 	r.mu.RUnlock()
 
+	// 2) Ask VK.
 	title := strings.TrimSpace(r.fetchTitle(peerID))
 
+	// 3) Fallback for cases when VK can't / doesn't return title.
 	if title == "" {
-		// fallback
 		if peerID >= 2000000000 {
 			title = fmt.Sprintf("Чат %d", peerID-2000000000)
 		} else {
@@ -57,6 +54,7 @@ func (r *PeerResolver) Title(peerID int) string {
 		}
 	}
 
+	// Save to cache.
 	r.mu.Lock()
 	r.cache[peerID] = title
 	r.mu.Unlock()
@@ -64,14 +62,23 @@ func (r *PeerResolver) Title(peerID int) string {
 	return title
 }
 
+type conversationsByID struct {
+	Count int `json:"count"`
+	Items []struct {
+		ChatSettings struct {
+			Title string `json:"title"`
+		} `json:"chat_settings"`
+	} `json:"items"`
+}
+
 func (r *PeerResolver) fetchTitle(peerID int) string {
-	var out vkConversationsByID
+	var out conversationsByID
 
 	err := r.vk.RequestUnmarshal(
 		"messages.getConversationsById",
 		&out,
 		api.Params{
-			"peer_ids": fmt.Sprintf("%d", peerID),
+			"peer_ids": fmt.Sprintf("%d", peerID), // string is the most compatible
 			"extended": 0,
 		},
 	)
@@ -87,6 +94,5 @@ func (r *PeerResolver) fetchTitle(peerID int) string {
 		}
 		return ""
 	}
-
 	return strings.TrimSpace(out.Items[0].ChatSettings.Title)
 }

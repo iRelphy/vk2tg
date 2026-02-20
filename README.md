@@ -4,7 +4,7 @@
 
 ## Быстрый старт
 
-1) Скопируй `main.env.example` в `main.env` и заполни токены:
+1) Переименуй `main.env.example` в `main.env` и заполни токены:
 - `VK_TOKEN`
 - `TG_TOKEN`
 
@@ -15,21 +15,5 @@ go mod tidy
 go run ./cmd/vk2tg
 ```
 
-3) В Telegram напиши боту `/start` в нужном чате (личка/группа) — этот чат станет подписчиком.
-Чтобы отключить — `/stop`.
-
-## Структура проекта
-
-- `cmd/vk2tg` — точка входа (минимальный main)
-- `internal/app` — сборка всех компонентов и запуск
-- `internal/config` — env и конфиг
-- `internal/vk` — VK API + резолверы (имя/название чата)
-- `internal/tg` — Telegram отправка + команды
-- `internal/storage` — subscribers.json
-- `internal/bridge` — логика склейки VK→TG
-- `internal/util` — маленькие утилиты (HTML escape, лимиты, время)
-
-## Важно
-
-- `main.env` и `subscribers.json` игнорируются через `.gitignore`.
-- Telegram форматирование: мы используем HTML parse mode и всегда экранируем пользовательский текст.
+3) В Telegram напиши боту `/start` — так бот сможет начать пересылать сообщения.
+Чтобы отключить пересылку — `/stop`.
